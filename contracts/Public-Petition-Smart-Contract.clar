@@ -6,6 +6,10 @@
 (define-constant ERR_INVALID_DURATION (err u104))
 (define-constant ERR_PETITION_INACTIVE (err u105))
 (define-constant ERR_INVALID_TARGET (err u106))
+(define-constant ERR_INSUFFICIENT_FUNDS (err u107))
+(define-constant ERR_NO_REWARDS_AVAILABLE (err u108))
+(define-constant ERR_REWARD_ALREADY_CLAIMED (err u109))
+(define-constant MIN_DONATION u100000)
 
 (define-data-var petition-counter uint u0)
 
@@ -245,5 +249,97 @@
       u0
     )
     u0
+  )
+)
+
+
+
+(define-map petition-donations
+  { petition-id: uint }
+  { total-donated: uint, donor-count: uint }
+)
+
+(define-map user-donations
+  { petition-id: uint, donor: principal }
+  { amount: uint, donated-at: uint }
+)
+
+(define-map reward-claims
+  { petition-id: uint, signer: principal }
+  { claimed: bool, amount: uint }
+)
+
+(define-read-only (get-petition-donations (petition-id uint))
+  (default-to { total-donated: u0, donor-count: u0 } 
+    (map-get? petition-donations { petition-id: petition-id }))
+)
+
+(define-read-only (get-user-donation (petition-id uint) (donor principal))
+  (map-get? user-donations { petition-id: petition-id, donor: donor })
+)
+
+(define-read-only (get-reward-amount (petition-id uint))
+  (let ((donations (get-petition-donations petition-id)))
+    (/ (get total-donated donations) u2))
+)
+
+(define-read-only (calculate-signer-reward (petition-id uint))
+  (match (get-petition petition-id)
+    petition-data
+    (let ((reward-pool (get-reward-amount petition-id)))
+      (if (> (get current-signatures petition-data) u0)
+        (/ reward-pool (get current-signatures petition-data))
+        u0))
+    u0)
+)
+
+(define-public (donate-to-petition (petition-id uint) (amount uint))
+  (let (
+    (petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND))
+    (current-donations (get-petition-donations petition-id))
+    (existing-donation (get-user-donation petition-id tx-sender))
+  )
+    (asserts! (get is-active petition-data) ERR_PETITION_INACTIVE)
+    (asserts! (>= amount MIN_DONATION) ERR_INSUFFICIENT_FUNDS)
+    
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    (map-set user-donations
+      { petition-id: petition-id, donor: tx-sender }
+      { amount: (+ amount (default-to u0 (get amount existing-donation))), 
+        donated-at: stacks-block-height }
+    )
+    
+    (map-set petition-donations
+      { petition-id: petition-id }
+      { total-donated: (+ (get total-donated current-donations) amount),
+        donor-count: (if (is-none existing-donation) 
+          (+ (get donor-count current-donations) u1) 
+          (get donor-count current-donations)) }
+    )
+    
+    (ok amount)
+  )
+)
+
+(define-public (claim-reward (petition-id uint))
+  (let (
+    (petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND))
+    (reward-per-signer (calculate-signer-reward petition-id))
+    (existing-claim (map-get? reward-claims { petition-id: petition-id, signer: tx-sender }))
+  )
+    (asserts! (is-petition-successful petition-id) ERR_PETITION_INACTIVE)
+    (asserts! (has-user-signed petition-id tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (is-none existing-claim) ERR_REWARD_ALREADY_CLAIMED)
+    (asserts! (> reward-per-signer u0) ERR_NO_REWARDS_AVAILABLE)
+    
+    (try! (as-contract (stx-transfer? reward-per-signer tx-sender tx-sender)))
+    
+    (map-set reward-claims
+      { petition-id: petition-id, signer: tx-sender }
+      { claimed: true, amount: reward-per-signer }
+    )
+    
+    (ok reward-per-signer)
   )
 )
