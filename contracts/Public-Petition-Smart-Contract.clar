@@ -11,6 +11,11 @@
 (define-constant ERR_REWARD_ALREADY_CLAIMED (err u109))
 (define-constant MIN_DONATION u100000)
 
+(define-constant ERR_TEMPLATE_NOT_FOUND (err u110))
+(define-constant ERR_TEMPLATE_EXISTS (err u111))
+
+(define-data-var template-counter uint u0)
+
 (define-data-var petition-counter uint u0)
 
 (define-map petitions
@@ -341,5 +346,136 @@
     )
     
     (ok reward-per-signer)
+  )
+)
+
+
+(define-map petition-templates
+  { template-id: uint }
+  {
+    creator: principal,
+    name: (string-ascii 50),
+    title-template: (string-ascii 100),
+    description-template: (string-ascii 500),
+    suggested-target: uint,
+    suggested-duration: uint,
+    category: (string-ascii 50),
+    usage-count: uint,
+    is-verified: bool,
+    created-at: uint
+  }
+)
+
+(define-map template-usage
+  { template-id: uint }
+  { petitions-created: (list 100 uint) }
+)
+
+(define-read-only (get-template (template-id uint))
+  (map-get? petition-templates { template-id: template-id })
+)
+
+(define-read-only (get-template-usage (template-id uint))
+  (default-to { petitions-created: (list) } 
+    (map-get? template-usage { template-id: template-id }))
+)
+
+(define-read-only (get-total-templates)
+  (var-get template-counter)
+)
+
+(define-read-only (get-popular-templates)
+  (fold check-template-popularity (list u1 u2 u3 u4 u5) (list))
+)
+
+(define-private (check-template-popularity (template-id uint) (popular-list (list 5 uint)))
+  (match (get-template template-id)
+    template-data
+    (if (> (get usage-count template-data) u2)
+      (unwrap! (as-max-len? (append popular-list template-id) u5) popular-list)
+      popular-list)
+    popular-list)
+)
+
+(define-public (create-template
+  (name (string-ascii 50))
+  (title-template (string-ascii 100))
+  (description-template (string-ascii 500))
+  (suggested-target uint)
+  (suggested-duration uint)
+  (category (string-ascii 50))
+)
+  (let ((template-id (+ (var-get template-counter) u1)))
+    (map-set petition-templates
+      { template-id: template-id }
+      {
+        creator: tx-sender,
+        name: name,
+        title-template: title-template,
+        description-template: description-template,
+        suggested-target: suggested-target,
+        suggested-duration: suggested-duration,
+        category: category,
+        usage-count: u0,
+        is-verified: false,
+        created-at: stacks-block-height
+      }
+    )
+    
+    (map-set template-usage
+      { template-id: template-id }
+      { petitions-created: (list) }
+    )
+    
+    (var-set template-counter template-id)
+    (ok template-id)
+  )
+)
+
+(define-public (create-petition-from-template
+  (template-id uint)
+  (custom-title (optional (string-ascii 100)))
+  (custom-description (optional (string-ascii 500)))
+  (custom-target (optional uint))
+  (custom-duration (optional uint))
+)
+  (let (
+    (template-data (unwrap! (get-template template-id) ERR_TEMPLATE_NOT_FOUND))
+    (final-title (default-to (get title-template template-data) custom-title))
+    (final-description (default-to (get description-template template-data) custom-description))
+    (final-target (default-to (get suggested-target template-data) custom-target))
+    (final-duration (default-to (get suggested-duration template-data) custom-duration))
+    (petition-id (+ (var-get petition-counter) u1))
+    (current-usage (get-template-usage template-id))
+  )
+    (asserts! (> final-target u0) ERR_INVALID_TARGET)
+    (asserts! (> final-duration u0) ERR_INVALID_DURATION)
+    
+    (try! (create-petition final-title final-description final-target final-duration (get category template-data)))
+    
+    (map-set petition-templates
+      { template-id: template-id }
+      (merge template-data { usage-count: (+ (get usage-count template-data) u1) })
+    )
+    
+    (map-set template-usage
+      { template-id: template-id }
+      { petitions-created: (unwrap! (as-max-len? (append (get petitions-created current-usage) petition-id) u100) ERR_UNAUTHORIZED) }
+    )
+    
+    (ok petition-id)
+  )
+)
+
+(define-public (verify-template (template-id uint))
+  (let ((template-data (unwrap! (get-template template-id) ERR_TEMPLATE_NOT_FOUND)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    
+    (map-set petition-templates
+      { template-id: template-id }
+      (merge template-data { is-verified: true })
+    )
+    
+    (ok true)
   )
 )
