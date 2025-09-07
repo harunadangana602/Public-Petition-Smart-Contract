@@ -14,6 +14,8 @@
 (define-constant ERR_TEMPLATE_NOT_FOUND (err u110))
 (define-constant ERR_TEMPLATE_EXISTS (err u111))
 
+(define-constant ERR_UPDATE_TOO_LONG (err u112))
+
 (define-data-var template-counter uint u0)
 
 (define-data-var petition-counter uint u0)
@@ -477,5 +479,79 @@
     )
     
     (ok true)
+  )
+)
+
+
+(define-map petition-updates
+  { petition-id: uint, update-id: uint }
+  {
+    creator: principal,
+    message: (string-ascii 300),
+    posted-at: uint,
+    update-type: (string-ascii 20)
+  }
+)
+
+(define-map petition-update-count
+  { petition-id: uint }
+  { count: uint }
+)
+
+(define-read-only (get-petition-update (petition-id uint) (update-id uint))
+  (map-get? petition-updates { petition-id: petition-id, update-id: update-id })
+)
+
+(define-read-only (get-petition-update-count (petition-id uint))
+  (default-to { count: u0 } (map-get? petition-update-count { petition-id: petition-id }))
+)
+
+(define-read-only (get-latest-update (petition-id uint))
+  (let ((update-count (get count (get-petition-update-count petition-id))))
+    (if (> update-count u0)
+      (get-petition-update petition-id update-count)
+      none))
+)
+
+(define-public (post-petition-update 
+  (petition-id uint) 
+  (message (string-ascii 300)) 
+  (update-type (string-ascii 20))
+)
+  (let (
+    (petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND))
+    (current-count (get count (get-petition-update-count petition-id)))
+    (new-update-id (+ current-count u1))
+  )
+    (asserts! (is-eq tx-sender (get creator petition-data)) ERR_UNAUTHORIZED)
+    (asserts! (get is-active petition-data) ERR_PETITION_INACTIVE)
+    (asserts! (> (len message) u0) ERR_UPDATE_TOO_LONG)
+    
+    (map-set petition-updates
+      { petition-id: petition-id, update-id: new-update-id }
+      {
+        creator: tx-sender,
+        message: message,
+        posted-at: stacks-block-height,
+        update-type: update-type
+      }
+    )
+    
+    (map-set petition-update-count
+      { petition-id: petition-id }
+      { count: new-update-id }
+    )
+    
+    (ok new-update-id)
+  )
+)
+
+(define-read-only (get-recent-updates (petition-id uint))
+  (let ((update-count (get count (get-petition-update-count petition-id))))
+    (if (> update-count u0)
+      (if (> update-count u2)
+        (list (- update-count u1) update-count)
+        (list update-count))
+      (list))
   )
 )
