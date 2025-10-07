@@ -16,6 +16,9 @@
 
 (define-constant ERR_UPDATE_TOO_LONG (err u112))
 
+(define-constant ERR_ALREADY_ENDORSED (err u113))
+(define-constant ERR_INVALID_RATING (err u114))
+
 (define-data-var template-counter uint u0)
 
 (define-data-var petition-counter uint u0)
@@ -553,5 +556,86 @@
         (list (- update-count u1) update-count)
         (list update-count))
       (list))
+  )
+)
+
+(define-map petition-endorsements
+  { petition-id: uint, endorser: principal }
+  {
+    rating: uint,
+    comment: (optional (string-ascii 200)),
+    endorsed-at: uint,
+    endorser-reputation: uint
+  }
+)
+
+(define-map petition-endorsement-stats
+  { petition-id: uint }
+  {
+    total-endorsements: uint,
+    average-rating: uint,
+    total-rating-points: uint
+  }
+)
+
+(define-map endorser-stats
+  { endorser: principal }
+  {
+    total-endorsements: uint,
+    reputation-score: uint
+  }
+)
+
+(define-read-only (get-petition-endorsements (petition-id uint))
+  (default-to 
+    { total-endorsements: u0, average-rating: u0, total-rating-points: u0 }
+    (map-get? petition-endorsement-stats { petition-id: petition-id }))
+)
+
+(define-read-only (get-endorsement (petition-id uint) (endorser principal))
+  (map-get? petition-endorsements { petition-id: petition-id, endorser: endorser })
+)
+
+(define-read-only (get-endorser-stats (endorser principal))
+  (default-to { total-endorsements: u0, reputation-score: u0 }
+    (map-get? endorser-stats { endorser: endorser }))
+)
+
+(define-read-only (has-endorsed (petition-id uint) (endorser principal))
+  (is-some (get-endorsement petition-id endorser))
+)
+
+(define-public (endorse-petition 
+  (petition-id uint) 
+  (rating uint)
+  (comment (optional (string-ascii 200)))
+)
+  (let (
+    (petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND))
+    (current-stats (get-petition-endorsements petition-id))
+    (endorser-data (get-endorser-stats tx-sender))
+    (new-total (+ (get total-endorsements current-stats) u1))
+    (new-rating-points (+ (get total-rating-points current-stats) rating))
+  )
+    (asserts! (get is-active petition-data) ERR_PETITION_INACTIVE)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR_INVALID_RATING)
+    (asserts! (is-none (get-endorsement petition-id tx-sender)) ERR_ALREADY_ENDORSED)
+    
+    (map-set petition-endorsements
+      { petition-id: petition-id, endorser: tx-sender }
+      { rating: rating, comment: comment, endorsed-at: stacks-block-height, endorser-reputation: (get reputation-score endorser-data) }
+    )
+    
+    (map-set petition-endorsement-stats
+      { petition-id: petition-id }
+      { total-endorsements: new-total, average-rating: (/ new-rating-points new-total), total-rating-points: new-rating-points }
+    )
+    
+    (map-set endorser-stats
+      { endorser: tx-sender }
+      { total-endorsements: (+ (get total-endorsements endorser-data) u1), reputation-score: (+ (get reputation-score endorser-data) u1) }
+    )
+    
+    (ok true)
   )
 )
