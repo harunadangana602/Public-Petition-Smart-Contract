@@ -639,3 +639,96 @@
     (ok true)
   )
 )
+
+
+(define-constant ERR_MILESTONE_EXISTS (err u115))
+
+(define-map petition-milestones
+  { petition-id: uint }
+  {
+    milestone-25-reached: bool,
+    milestone-25-block: uint,
+    milestone-50-reached: bool,
+    milestone-50-block: uint,
+    milestone-75-reached: bool,
+    milestone-75-block: uint,
+    milestone-100-reached: bool,
+    milestone-100-block: uint
+  }
+)
+
+(define-map milestone-events
+  { petition-id: uint, milestone-type: uint }
+  { unlocked-at: uint, signatures-at-unlock: uint, momentum-score: uint }
+)
+
+(define-map petition-momentum
+  { petition-id: uint }
+  { velocity-score: uint, acceleration: uint, last-calculated: uint }
+)
+
+(define-read-only (get-petition-milestones (petition-id uint))
+  (default-to 
+    { milestone-25-reached: false, milestone-25-block: u0, milestone-50-reached: false, milestone-50-block: u0, milestone-75-reached: false, milestone-75-block: u0, milestone-100-reached: false, milestone-100-block: u0 }
+    (map-get? petition-milestones { petition-id: petition-id }))
+)
+
+(define-read-only (get-milestone-event (petition-id uint) (milestone-type uint))
+  (map-get? milestone-events { petition-id: petition-id, milestone-type: milestone-type })
+)
+
+(define-read-only (check-milestone-unlocked (petition-id uint) (milestone-type uint))
+  (let ((milestones (get-petition-milestones petition-id)))
+    (if (is-eq milestone-type u25) (get milestone-25-reached milestones)
+      (if (is-eq milestone-type u50) (get milestone-50-reached milestones)
+        (if (is-eq milestone-type u75) (get milestone-75-reached milestones)
+          (if (is-eq milestone-type u100) (get milestone-100-reached milestones) false)))))
+)
+
+(define-read-only (calculate-momentum-score (petition-id uint))
+  (match (get-petition petition-id)
+    petition-data
+    (let (
+      (milestones (get-petition-milestones petition-id))
+      (blocks-elapsed (- stacks-block-height (get created-at petition-data)))
+      (signature-rate (if (> blocks-elapsed u0) (/ (* (get current-signatures petition-data) u1000) blocks-elapsed) u0))
+    )
+      { current-signatures: (get current-signatures petition-data), signature-rate: signature-rate, blocks-active: blocks-elapsed }
+    )
+    { current-signatures: u0, signature-rate: u0, blocks-active: u0 }
+  )
+)
+
+(define-private (record-milestone (petition-id uint) (current-sigs uint) (target-sigs uint))
+  (let (
+    (progress-pct (/ (* current-sigs u100) target-sigs))
+    (milestones (get-petition-milestones petition-id))
+    (momentum (calculate-momentum-score petition-id))
+  )
+    (if (and (>= progress-pct u25) (not (get milestone-25-reached milestones)))
+      (begin
+        (map-set petition-milestones { petition-id: petition-id } (merge milestones { milestone-25-reached: true, milestone-25-block: stacks-block-height }))
+        (map-set milestone-events { petition-id: petition-id, milestone-type: u25 } { unlocked-at: stacks-block-height, signatures-at-unlock: current-sigs, momentum-score: (get signature-rate momentum) })
+      )
+      (if (and (>= progress-pct u50) (not (get milestone-50-reached milestones)))
+        (begin
+          (map-set petition-milestones { petition-id: petition-id } (merge milestones { milestone-50-reached: true, milestone-50-block: stacks-block-height }))
+          (map-set milestone-events { petition-id: petition-id, milestone-type: u50 } { unlocked-at: stacks-block-height, signatures-at-unlock: current-sigs, momentum-score: (get signature-rate momentum) })
+        )
+        (if (and (>= progress-pct u75) (not (get milestone-75-reached milestones)))
+          (begin
+            (map-set petition-milestones { petition-id: petition-id } (merge milestones { milestone-75-reached: true, milestone-75-block: stacks-block-height }))
+            (map-set milestone-events { petition-id: petition-id, milestone-type: u75 } { unlocked-at: stacks-block-height, signatures-at-unlock: current-sigs, momentum-score: (get signature-rate momentum) })
+          )
+          (if (and (>= progress-pct u100) (not (get milestone-100-reached milestones)))
+            (begin
+              (map-set petition-milestones { petition-id: petition-id } (merge milestones { milestone-100-reached: true, milestone-100-block: stacks-block-height }))
+              (map-set milestone-events { petition-id: petition-id, milestone-type: u100 } { unlocked-at: stacks-block-height, signatures-at-unlock: current-sigs, momentum-score: (get signature-rate momentum) })
+            )
+            true
+          )
+        )
+      )
+    )
+  )
+)
